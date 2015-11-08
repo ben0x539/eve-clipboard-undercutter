@@ -4,6 +4,11 @@
 #include <gtk/gtk.h>
 #include <glib.h>
 
+typedef struct PriceOffset_ {
+  gboolean auto_determine;
+  gint manual_offset;
+} PriceOffset;
+
 static gint64 exp10(int exponent) {
   int i;
   gint64 n = 1;
@@ -12,6 +17,17 @@ static gint64 exp10(int exponent) {
     n *= 10;
 
   return n;
+}
+
+static gint count_tabs(const gchar* text) {
+  gint count;
+  for (count = 0; *text; ++text) {
+    if (*text == '\t')
+      ++count;
+    else if (!g_ascii_isprint(*text))
+      return -1;
+  }
+  return count;
 }
 
 static gint64 extract_isk_amount(const gchar* text) {
@@ -60,13 +76,33 @@ static void on_text(
   gint64 isk;
   char buf[32];
   gint len;
-  gint64 price_offset = *(gint64*) user_data;
+  gboolean is_buy_order;
+  PriceOffset* price_offset = (PriceOffset*) user_data;
+
+  switch (count_tabs(text)) {
+  case 4:
+    is_buy_order = FALSE;
+    break;
+  case 6:
+    is_buy_order = TRUE;
+    break;
+  default:
+    return;
+  }
 
   isk = extract_isk_amount(text);
   if (isk == -1)
     return;
 
-  isk += price_offset;
+  if (price_offset->auto_determine) {
+    if (is_buy_order)
+      ++isk;
+    else
+      --isk;
+  } else {
+    isk += price_offset->manual_offset;
+  }
+
   len = g_snprintf(
       buf, sizeof buf,
       "%" G_GINT64_FORMAT ".%02" G_GINT64_FORMAT,
@@ -82,8 +118,8 @@ static void on_owner_change(
 
 struct OffsetOption {
   const char* label;
-  gint64 my_offset;
-  gint64* offset;
+  PriceOffset my_offset;
+  PriceOffset* offset;
 };
 
 static void on_radio_toggle(GtkToggleButton* button, gpointer user_data) {
@@ -97,15 +133,16 @@ static void on_destroy(GtkWidget* widget, gpointer user_data) {
   gtk_main_quit();
 }
 
-static void make_gui(gint64* price_offset) {
+static void make_gui(PriceOffset* price_offset) {
   GtkWidget* window;
   GtkWidget* box;
   GtkWidget* label;
   GtkWidget* radio;
   static struct OffsetOption options[] = {
-    { "For Sell orders (-0.01 ISK)", -1, NULL },
-    { "No adjustment (+/- 0.00 ISK)", 0, NULL },
-    { "For Buy orders (+0.01 ISK)", 1, NULL }
+    { "Automatic (+/-0.01 ISK)", { TRUE, 0 }, NULL },
+    { "For Sell orders (-0.01 ISK)", { FALSE, -1 }, NULL },
+    { "No adjustment (+/- 0.00 ISK)", { FALSE, 0 }, NULL },
+    { "For Buy orders (+0.01 ISK)", { FALSE, 1 }, NULL }
   };
   struct OffsetOption* p_option;
 
@@ -139,13 +176,14 @@ static void make_gui(gint64* price_offset) {
 
 int main(int argc, char* argv[]) {
   GtkClipboard* clipboard;
-  gint64 price_offset;
+  PriceOffset price_offset;
 
   gtk_init(&argc, &argv);
 
   clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
 
-  price_offset = -1;
+  price_offset.auto_determine = TRUE;
+  price_offset.manual_offset = -1;
 
   g_signal_connect(
       clipboard, "owner-change",
